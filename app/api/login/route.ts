@@ -1,4 +1,4 @@
-// app/api/login/route.ts  ← 100% WORKING FINAL VERSION
+// app/api/login/route.ts  ← THIS IS THE 100% FINAL WORKING VERSION
 
 export async function POST(request: Request) {
   const body = await request.text();
@@ -29,10 +29,10 @@ export async function POST(request: Request) {
     status: 200,
     headers: {
       'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': 'http://localhost:5173',  // ← EXACT ORIGIN
-      'Access-Control-Allow-Credentials': 'true',             // ← REQUIRED
+      'Access-Control-Allow-Origin': 'http://localhost:5173',
+      'Access-Control-Allow-Credentials': 'true',
       'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type,X-Requested-With,X-HTTP-Method-Override,Accept',
     },
   });
 }
@@ -44,7 +44,7 @@ export async function OPTIONS() {
       'Access-Control-Allow-Origin': 'http://localhost:5173',
       'Access-Control-Allow-Credentials': 'true',
       'Access-Control-Allow-Methods': 'POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type,X-Requested-With,X-HTTP-Method-Override,Accept',
     },
   });
 }
