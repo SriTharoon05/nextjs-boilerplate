@@ -1,7 +1,7 @@
 // app/api/analytics/route.ts
 import { NextResponse } from 'next/server';
 
-const TARGET_URL = 'https://portal.ubtiinc.com/TimetrackForms/dashboard/index';
+const TARGET_URL = 'https://portal.ubtiinc.com/TimetrackForms/timetrack/timetrackentry';
 
 export async function POST(request: Request) {
   return handleRequest(request);
