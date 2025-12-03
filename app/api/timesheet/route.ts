@@ -50,7 +50,7 @@ async function handleRequest(request: Request) {
       cache: 'no-store',
     });
 
-    const html = await response.text();
+    let html = await response.text();
 
     if (!response.ok) {
       return NextResponse.json(
@@ -59,35 +59,54 @@ async function handleRequest(request: Request) {
       );
     }
 
+    // ———————— PRE-PROCESS HTML TO FIX MALFORMED TAGS ————————
+    // Fix common issues like </td"> -> </td>
+    html = html.replace(/<\/t[dg][d]\s*["'>]/g, '</td>');
+    html = html.replace(/<t[dg][d]\s*["'<]/g, '<td ');
+    // Fix unclosed attributes/quotes
+    html = html.replace(/(\w+)=["']([^"']*)["']*>/g, '$1="$2">');
+    html = html.replace(/(\w+)=["']([^"']*)$/gm, '$1="$2"');
+    // Remove extra quotes in tags
+    html = html.replace(/"\s*<\/t[dg]/g, '</td');
+    // General cleanup for malformed HTML
+    html = html.replace(/<script[^>]*>([\s\S]*?)<\/script>/gi, ''); // Remove scripts if causing issues
+    html = html.trim();
+
     // ———————— PARSE HTML TO COMPREHENSIVE JSON ————————
-    const $ = cheerio.load(html);
+    const $ = cheerio.load(html, { xmlMode: false, decodeEntities: false });
 
     // Extract Header
     const header: any = {};
-    header.member = $('td.labelleft:contains("Member :")').next().text().trim().replace('Member : ', '');
+    header.member = $('td.labelleft:contains("Member :")').next().text().trim().replace(/^Member\s*:\s*/, '');
     header.memberId = parseInt($('#AppUserID').val() as string) || 0;
-    header.weekEnding = new Date($('#WeekEndingDay').val() as string).toISOString().split('T')[0];
-    header.startDate = new Date($('#WeekStartDay').val() as string).toISOString().split('T')[0];
+    const weekEndingVal = $('#WeekEndingDay').val() as string;
+    header.weekEnding = new Date(weekEndingVal.replace(/\//g, '-')).toISOString().split('T')[0];
+    const startDateVal = $('#WeekStartDay').val() as string;
+    header.startDate = new Date(startDateVal.replace(/\//g, '-')).toISOString().split('T')[0];
     header.endDate = header.weekEnding;
     header.isSubmitted = $('#IsSubmitted').val() === 'True';
-    header.isApproved = false; // Not directly in HTML, assume false if not present
+    header.isApproved = false; // Assume false if not explicitly present
     header.isFirstWeek = $('#IsFirstWeek').val() === 'True';
     header.isLastWeek = $('#IsLastWeek').val() === 'True';
     header.isPartial = $('#IsPartial').val() === 'True';
     header.isUIAPFullTimeEmployee = $('#IsUIAPFullTimeEmployee').val() === 'True';
     header.isFullTimeEmployee = $('#IsFullTimeEmployee').val() === 'True';
-    header.userType = $('#UserType').val() as string;
+    header.userType = $('#UserType').val() as string || 'FTEMP';
     header.ttHeaderId = parseInt($('#TTHeaderID').val() as string) || 0;
-    header.totalHoursLogged = 0.00; // Calculate from tfoot or sum rows
+    header.totalHoursLogged = 0.00; // Will calculate later
 
-    // Extract Week Days from table headers
+    // Extract Week Days from table headers (columns 2-8)
     const weekDays: any[] = [];
-    $('#ttTable thead th').slice(1, 8).each((i, th) => {
-      const text = $(th).html() || '';
-      const dayMatch = text.match(/<br \/>\s*(\d+)/);
-      const dayNum = dayMatch ? parseInt(dayMatch[1]) : 0;
-      const dayAbbr = text.replace(/<br \/>\s*\d+/, '').trim();
-      const fullDate = new Date(header.startDate);
+    $('#ttTable thead tr.gridHeader th').slice(1, 8).each((i, th) => {
+      let text = $(th).html() || '';
+      // Extract day abbr and number
+      const dayMatch = text.match(/<br\s*\/?>\s*(\d+)/i);
+      const dayNum = dayMatch ? parseInt(dayMatch[1]) : (29 + i); // Fallback to sequential
+      text = text.replace(/<br\s*\/?>\s*\d+/, '').trim();
+      const dayAbbr = text.replace(/\s+/g, ' ').trim(); // e.g., "Sat"
+      
+      // Calculate full date from startDate + offset
+      let fullDate = new Date(header.startDate);
       fullDate.setDate(fullDate.getDate() + i);
       weekDays.push({
         date: fullDate.toISOString().split('T')[0],
@@ -96,58 +115,74 @@ async function handleRequest(request: Request) {
       });
     });
 
-    // Collect ALL hidden inputs first, mapped by index
+    // Collect ALL hidden inputs, mapped by index
     const allHidden: Record<number, Record<string, any>> = {};
     $('input[type="hidden"]').each((_, el) => {
       const name = $(el).attr('name') || '';
-      const value = $(el).attr('value') || '';
-      const match = name.match(/ProjectTimeSheetList\[(\d+)\]\.(.*)/);
+      const value = $(el).attr('value') || '0';
+      const match = name.match(/ProjectTimeSheetList\[(\d+)\]\.([^.]+)/);
       if (match) {
         const [, indexStr, field] = match;
         const index = parseInt(indexStr);
         if (!allHidden[index]) allHidden[index] = {};
-        allHidden[index][field] = isNaN(parseFloat(value)) ? value : parseFloat(value);
+        const parsedValue = field.match(/^(D\d+|MaxHrs|MonthlyUsed)$/i) 
+          ? parseFloat(value) || 0 
+          : (field.match(/^(Is[A-Za-z]+)$/i) ? value === 'True' : value);
+        allHidden[index][field] = parsedValue;
       }
     });
 
-    // Extract categories (billing headers)
-    let currentCategory = '';
+    // Extract projects with categories
+    let currentCategory = 'Unknown';
     const projects: any[] = [];
     let projectIndex = 0;
 
-    $('#ttTable tbody').children().each((i, elem) => {
+    // Find all tbody children, process headers and rows
+    $('#ttTable tbody > *').each((i, elem) => {
       const $elem = $(elem);
 
-      // If it's a category header
-      if ($elem.hasClass('budgHeaders')) {
-        currentCategory = $elem.text().trim();
-        return;
+      if ($elem.is('tr.budgHeaders')) {
+        // Category header
+        currentCategory = $elem.find('td').text().trim();
+        return true; // continue
       }
 
-      // If it's a project row
-      if ($elem.hasClass('timeTrackEntryRow')) {
-        const hidden = allHidden[projectIndex] || {};
-        const projectName = $elem.find('td').first().text().trim();
-        const availableHrsText = $elem.find('.ttAvailableHrs').text().trim();
-        const usedAssignedText = $elem.find('td:nth-child(12)').text().trim(); // Used / Assigned column (index 11, nth-child 12)
-        const [usedStr, assignedStr] = usedAssignedText.split('/').map(s => s.trim());
-        const approver = $elem.find('td:nth-last-child(2)').text().trim(); // Approver td
-        const markAsHiddenCheckbox = $elem.find('.ttMarkAsHiddenCheckbox');
-        const markAsHiddenId = markAsHiddenCheckbox.attr('id') || '';
+      if ($elem.is('tr.timeTrackEntryRow')) {
+        if (projectIndex >= Object.keys(allHidden).length) {
+          console.warn('More rows than hidden data, skipping');
+          return true;
+        }
 
-        // Daily hours from inputs (default 0)
+        const hidden = allHidden[projectIndex] || {};
+        const tds = $elem.find('td');
+        if (tds.length < 12) return true; // Skip invalid rows
+
+        const projectName = tds.eq(0).text().trim();
+        const availableHrsText = tds.eq(10).find('.ttAvailableHrs').text().trim(); // Available Hrs column
+        const usedAssignedText = tds.eq(11).text().trim(); // Used / Assigned
+        const [usedStr, assignedStr = '0'] = usedAssignedText ? usedAssignedText.split('/').map(s => s.trim()) : ['0', '0'];
+        const approver = tds.eq(13).text().trim(); // Approver
+        const markAsHiddenCheckbox = tds.eq(14).find('input[type="checkbox"]');
+        const markAsHiddenId = markAsHiddenCheckbox.attr('id') || `${hidden.ProjectID || 'unknown'}-${hidden.BudgetID || 'unknown'}`;
+
+        // Daily hours: get current values from inputs
         const dailyHours: any = {};
-        ['D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7'].forEach(day => {
-          const input = $elem.find(`input[name="${hidden[`${day}`]?.name || `ProjectTimeSheetList[${projectIndex}].${day}`}]`);
+        let rowTotal = 0;
+        ['D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7'].forEach((day, dayIndex) => {
+          const inputSelector = `input[name="ProjectTimeSheetList[${projectIndex}].${day}"]`;
+          const input = $elem.find(inputSelector);
           const dayValue = parseFloat(input.val() as string) || 0;
+          rowTotal += dayValue;
           const dayIdField = `${day}ID`;
-          const dayId = hidden[dayIdField] || 0;
           dailyHours[day] = dayValue;
-          dailyHours[`${day}ID`] = dayId;
+          dailyHours[`${day}ID`] = hidden[dayIdField] || 0;
         });
 
-        // Row total from .ttTotalHrs
-        const rowTotal = parseFloat($elem.find('.ttTotalHrs').text().trim()) || 0;
+        // Override rowTotal if .ttTotalHrs exists
+        const totalHrsEl = $elem.find('.ttTotalHrs');
+        if (totalHrsEl.length) {
+          rowTotal = parseFloat(totalHrsEl.text().trim()) || rowTotal;
+        }
 
         projects.push({
           index: projectIndex,
@@ -156,7 +191,7 @@ async function handleRequest(request: Request) {
           projectId: hidden.ProjectID || null,
           budgetId: hidden.BudgetID || null,
           budgetAssignmentId: hidden.TTBudgetAssignmentID || null,
-          billingType: hidden.HourlyTypeName || 'Absolute', // Assuming billingType same as hourly
+          billingType: hidden.HourlyTypeName || 'Absolute',
           hourlyTypeName: hidden.HourlyTypeName || 'Unknown',
           availableHours: parseFloat(availableHrsText) || 0,
           usedHours: parseFloat(usedStr) || 0,
@@ -164,8 +199,8 @@ async function handleRequest(request: Request) {
           usedAssignedDisplay: usedAssignedText,
           approver,
           markAsHiddenId,
-          isSubmitted: hidden.IsSubmitted || false,
-          isApproved: hidden.IsApproved || false,
+          isSubmitted: !!hidden.IsSubmitted,
+          isApproved: !!hidden.IsApproved,
           monthlyUsed: hidden.MonthlyUsed || 0,
           maxHrs: hidden.MaxHrs || 0,
           dailyHours,
@@ -176,13 +211,17 @@ async function handleRequest(request: Request) {
       }
     });
 
-    // Calculate totalHoursLogged (sum of rowTotals)
-    header.totalHoursLogged = projects.reduce((sum, p) => sum + p.rowTotal, 0);
+    // Calculate total hours
+    header.totalHoursLogged = projects.reduce((sum, p) => sum + p.rowTotal, 0).toFixed(2) as any;
+
+    // Fallback projectCount
+    const projectCount = parseInt($('#projectCount').val() as string) || projects.length;
 
     const result = {
       header,
       weekDays,
       projects,
+      projectCount, // Add for completeness
     };
 
     return NextResponse.json(result, {
