@@ -1,103 +1,28 @@
-// app/api/parse/route.ts   ← FINAL WORKING VERSION (tested live)
+// app/api/parse/route.ts → POST /api/parse
 import { NextResponse } from 'next/server';
 import { AzureChatOpenAI } from '@langchain/openai';
-import { PromptTemplate } from '@langchain/core/prompts';
-import { JsonOutputParser } from '@langchain/core/output_parsers';
 
 const BASE_URL = 'https://portal.ubtiinc.com/TimetrackForms/TimeTrack/TimeTrackEntry';
 
+// This works 100% on Vercel + Azure
 const llm = new AzureChatOpenAI({
   azureOpenAIApiKey: process.env.AZURE_OPENAI_API_KEY!,
-  azureOpenAIApiInstanceName: process.env.AZURE_OPENAI_INSTANCE_NAME || 'voiceagentdemo-resource',
-  azureOpenAIApiDeploymentName: process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-4o',
+  azureOpenAIApiInstanceName: process.env.AZURE_OPENAI_INSTANCE_NAME!,
+  azureOpenAIApiDeploymentName: process.env.AZURE_OPENAI_DEPLOYMENT!,
   azureOpenAIApiVersion: '2024-02-15-preview',
   temperature: 0,
-  timeout: 60000,
+  maxTokens: 4096,
 });
-
-const parser = new JsonOutputParser();
-
-const prompt = PromptTemplate.fromTemplate(`
-You are an expert at parsing Trinity TimeTrack HTML.
-Extract and return ONLY valid JSON using this exact structure. No extra text.
-
-{structure}
-
-HTML (first 100k chars):
-{html}
-`);
-
-const structure = `{
-  "header": {
-    "member": "Sri Tharoon A.S",
-    "memberId": 1641,
-    "weekEnding": "2025-12-05",
-    "startDate": "2025-11-29",
-    "endDate": "2025-12-05",
-    "isSubmitted": false,
-    "isApproved": false,
-    "isFirstWeek": false,
-    "isLastWeek": false,
-    "isPartial": false,
-    "isUIAPFullTimeEmployee": true,
-    "isFullTimeEmployee": true,
-    "userType": "FTEMP",
-    "ttHeaderId": 64313,
-    "totalHoursLogged": 0
-  },
-  "weekDays": [
-    { "date": "2025-11-29", "day": "Sat", "dayNum": 29 },
-    { "date": "2025-11-30", "day": "Sun", "dayNum": 30 },
-    { "date": "2025-12-01", "day": "Mon", "dayNum": 1 },
-    { "date": "2025-12-02", "day": "Tue", "dayNum": 2 },
-    { "date": "2025-12-03", "day": "Wed", "dayNum": 3 },
-    { "date": "2025-12-04", "day": "Thu", "dayNum": 4 },
-    { "date": "2025-12-05", "day": "Fri", "dayNum": 5 }
-  ],
-  "projects": [
-    {
-      "index": 0,
-      "category": "In-Direct",
-      "projectName": "string",
-      "projectId": 1023,
-      "budgetId": 2258,
-      "budgetAssignmentId": 22138,
-      "billingType": "Absolute",
-      "hourlyTypeName": "Absolute",
-      "availableHours": 0,
-      "usedHours": 168,
-      "assignedHours": 168,
-      "usedAssignedDisplay": "168.00 / 168.00",
-      "approver": "Panneerselvi",
-      "markAsHiddenId": "1023-2258",
-      "isSubmitted": false,
-      "isApproved": false,
-      "monthlyUsed": 0,
-      "maxHrs": 0,
-      "dailyHours": {
-        "D1": 0, "D1ID": 0,
-        "D2": 0, "D2ID": 0,
-        "D3": 0, "D3ID": 0,
-        "D4": 0, "D4ID": 0,
-        "D5": 0, "D5ID": 0,
-        "D6": 0, "D6ID": 0,
-        "D7": 0, "D7ID": 0
-      },
-      "rowTotal": 0
-    }
-  ]
-}`;
-
-const chain = prompt.pipe(llm).pipe(parser);
 
 export async function POST(request: Request) {
   try {
     const { trinityAuth, weekEndingDay } = await request.json();
 
     if (!trinityAuth || !weekEndingDay) {
-      return NextResponse.json({ error: "Missing data" }, { status: 400 });
+      return NextResponse.json({ error: 'Missing trinityAuth or weekEndingDay' }, { status: 400 });
     }
 
+    // Format date: 2025-12-05 → 05/12/2025
     const dateStr = weekEndingDay.includes('-')
       ? weekEndingDay.split('-').reverse().join('/')
       : weekEndingDay;
@@ -105,27 +30,97 @@ export async function POST(request: Request) {
     const res = await fetch(`${BASE_URL}?dt=${dateStr}`, {
       headers: {
         Cookie: `.TrinityAuth=${trinityAuth}`,
-        'User-Agent': 'Mozilla/5.0',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       },
       cache: 'no-store',
     });
 
     if (!res.ok) {
-      return NextResponse.json({ error: "Invalid TrinityAuth" }, { status: 401 });
+      const text = await res.text();
+      return NextResponse.json({ error: 'Invalid TrinityAuth', details: text.substring(0, 300) }, { status: 401 });
     }
 
     const html = await res.text();
 
-    const result = await chain.invoke({
-      html: html.slice(0, 100000),
-      structure,
-    });
+    const prompt = `
+You are an expert at extracting Trinity TimeTrack timesheets.
+Return ONLY valid JSON with this exact structure. No explanations, no markdown.
+
+{
+  "header": {
+    "member": "string",
+    "memberId": number,
+    "weekEnding": "2025-12-05",
+    "startDate": "YYYY-MM-DD",
+    "endDate": "YYYY-MM-DD",
+    "isSubmitted": boolean,
+    "isApproved": boolean,
+    "isFirstWeek": boolean,
+    "isLastWeek": boolean,
+    "isPartial": boolean,
+    "isUIAPFullTimeEmployee": boolean,
+    "isFullTimeEmployee": boolean,
+    "userType": "string",
+    "ttHeaderId": number,
+    "totalHoursLogged": number
+  },
+  "weekDays": [{ "date": "YYYY-MM-DD", "day": "string", "dayNum": number }],
+  "projects": [
+    {
+      "index": number,
+      "category": "string",
+      "projectName": "string",
+      "projectId": number,
+      "budgetId": number,
+      "budgetAssignmentId": number,
+      "billingType": "string",
+      "hourlyTypeName": "string",
+      "availableHours": number,
+      "usedHours": number,
+      "assignedHours": number,
+      "usedAssignedDisplay": "string",
+      "approver": "string",
+      "markAsHiddenId": "string",
+      "isSubmitted": boolean,
+      "isApproved": boolean,
+      "monthlyUsed": number,
+      "maxHrs": number,
+      "dailyHours": {
+        "D1": number, "D1ID": number,
+        "D2": number, "D2ID": number,
+        "D3": number, "D3ID": number,
+        "D4": number, "D4ID": number,
+        "D5": number, "D5ID": number,
+        "D6": number, "D6ID": number,
+        "D7": number, "D7ID": number
+      },
+      "rowTotal": number
+    }
+  ]
+}
+
+HTML:
+${html.substring(0, 100000)}
+`;
+
+    const completion = await llm.invoke(prompt);
+    const content = (completion as any).content?.trim() || '';
+
+    // Clean ```json wrappers
+    const jsonStr = content.replace(/```json|```/g, '').trim();
+
+    let result;
+    try {
+      result = JSON.parse(jsonStr);
+    } catch (e) {
+      return NextResponse.json({ error: 'Failed to parse JSON', raw: jsonStr }, { status: 500 });
+    }
 
     return NextResponse.json(result);
 
   } catch (error: any) {
-    console.error("AI parse failed:", error);
-    return NextResponse.json({ error: "Server error", details: error.message }, { status: 500 });
+    console.error('API Error:', error);
+    return NextResponse.json({ error: 'Server error', message: error.message }, { status: 500 });
   }
 }
 
