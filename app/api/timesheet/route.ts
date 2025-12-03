@@ -5,37 +5,16 @@ import { JSDOM } from 'jsdom';
 const BASE_URL = 'https://portal.ubtiinc.com/TimetrackForms/TimeTrack/TimeTrackEntry';
 
 export async function POST(request: Request) {
-  return handleRequest(request);
-}
-
-export async function GET(request: Request) {
-  return handleRequest(request);
-}
-
-async function handleRequest(request: Request) {
   try {
-    let trinityAuth = '';
-    let weekEndingDay = '';
+    const { trinityAuth, weekEndingDay } = await request.json();
 
-    if (request.method === 'POST') {
-      const body = await request.json();
-      trinityAuth = body.trinityAuth || body['.TrinityAuth'] || '';
-      weekEndingDay = body.weekEndingDay || body.dt || '';
-    } else {
-      const url = new URL(request.url);
-      trinityAuth = url.searchParams.get('trinityAuth') || '';
-      weekEndingDay = url.searchParams.get('weekEndingDay') || '';
-    }
-
-    if (!trinityAuth) return NextResponse.json({ error: 'Missing trinityAuth' }, { status: 400 });
-    if (!weekEndingDay) return NextResponse.json({ error: 'Missing weekEndingDay' }, { status: 400 });
+    if (!trinityAuth || !weekEndingDay)
+      return NextResponse.json({ error: 'Missing trinityAuth or weekEndingDay' }, { status: 400 });
 
     const dt = normalizeDate(weekEndingDay);
     if (!dt) return NextResponse.json({ error: 'Invalid date format' }, { status: 400 });
 
-    const targetUrl = `${BASE_URL}?dt=${encodeURIComponent(dt)}`;
-
-    const response = await fetch(targetUrl, {
+    const res = await fetch(`${BASE_URL}?dt=${encodeURIComponent(dt)}`, {
       headers: {
         Cookie: `.TrinityAuth=${trinityAuth}`,
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -45,94 +24,44 @@ async function handleRequest(request: Request) {
       cache: 'no-store',
     });
 
-    if (!response.ok) {
-      const text = await response.text();
-      return NextResponse.json(
-        { error: 'Portal error', status: response.status, preview: text.slice(0, 300) },
-        { status: 401 }
-      );
+    if (!res.ok) {
+      const text = await res.text();
+      return NextResponse.json({ error: 'Authentication failed or week not found', preview: text.slice(0, 300) }, { status: 401 });
     }
 
-    const html = await response.text();
-    const data = parseTimesheetHtml(html);
+    const html = await res.text();
+    return NextResponse.json(parseTimesheetHtml(html));
 
-    return NextResponse.json(data, {
-      headers: { 'Cache-Control': 'no-store', 'Access-Control-Allow-Origin': '*' },
-    });
   } catch (error: any) {
-    console.error('Timesheet API Error:', error);
     return NextResponse.json({ error: 'Server error', message: error.message }, { status: 500 });
   }
 }
 
-// ────────────────── Helper Functions (fully typed) ──────────────────
+export const dynamic = 'force-dynamic';
+export const runtime = 'nodejs';
 
-function normalizeDate(dateStr: string): string | null {
-  const cleaned = dateStr.replace(/[-.]/g, '/');
-  const parts = cleaned.split('/');
-
-  if (parts.length !== 3) return null;
-
-  // Handle dd/mm/yyyy → mm/dd/yyyy (most common in your case)
-  const [d, m, y] = parts.map(Number);
-  if (d > 31) return `${m}/${d}/${y}`;           // dd/mm/yyyy
-  if (y.toString().length === 4) return `${m}/${d}/${y}`; // mm/dd/yyyy or yyyy/mm/dd
-  return cleaned;
-}
-
-interface WeekDay {
-  date: string;
-  day: string;
-  dayNum: number;
-}
-
-interface DailyHours {
-  [key: string]: number;
-}
-
-interface Project {
-  index: number;
-  category: string;
-  projectName: string;
-  projectId: number;
-  budgetId: number;
-  budgetAssignmentId: number;
-  billingType: string;
-  hourlyTypeName: string;
-  availableHours: number;
-  usedHours: number;
-  assignedHours: number;
-  usedAssignedDisplay: string;
-  approver: string;
-  markAsHiddenId: string;
-  isSubmitted: boolean;
-  isApproved: boolean;
-  monthlyUsed: number;
-  maxHrs: number;
-  dailyHours: DailyHours;
-  rowTotal: number;
-}
-
+// ────────────────────── EXACT FORMAT YOU WANT ──────────────────────
 function parseTimesheetHtml(html: string): any {
   const dom = new JSDOM(html);
   const doc = dom.window.document;
 
-  const memberName = doc.querySelector('#lblMemberName')?.textContent?.trim() ?? 'Unknown User';
-  const weekEnding = doc.querySelector('#hdnWeekEnding')?.getAttribute('value') ?? '';
-  const ttHeaderId = Number(doc.querySelector('#hdnTTHeaderID')?.getAttribute('value') ?? '0');
+  const memberName = doc.querySelector('#lblMemberName')?.textContent?.trim() || '';
+  const weekEnding = doc.querySelector('#hdnWeekEnding')?.getAttribute('value') || '';
+  const ttHeaderId = Number(doc.querySelector('#hdnTTHeaderID')?.getAttribute('value') || 0);
+  const memberIdMatch = html.match(/MemberID[^0-9]*(\d+)/);
+  const memberId = memberIdMatch ? Number(memberIdMatch[1]) : 0;
 
-  // Week days
-  const weekDays: WeekDay[] = [];
-  const dayHeaders = doc.querySelectorAll('#tblWeekDays th');
+  // Week days — exactly in order: Sat → Fri
+  const weekDays = [];
   const baseDate = new Date(weekEnding);
-
-  for (let i = 1; i < dayHeaders.length; i++) {
-    const th = dayHeaders[i] as HTMLElement;
-    const text = th.textContent?.trim() ?? '';
+  const dayHeaders = doc.querySelectorAll('#tblWeekDays th');
+  for (let i = 1; i <= 7; i++) {
+    const th = dayHeaders[i];
+    const text = th?.textContent?.trim() || '';
     const match = text.match(/(\w{3})\s+(\d+)/);
     if (match) {
       const date = new Date(baseDate);
-      date.setDate(baseDate.getDate() + (i - 6)); // Friday = index 6
+      date.setDate(baseDate.getDate() - (7 - i));
       weekDays.push({
         date: date.toISOString().split('T')[0],
         day: match[1],
@@ -141,56 +70,47 @@ function parseTimesheetHtml(html: string): any {
     }
   }
 
-  // Projects
-  const projects: Project[] = [];
-  const rows = doc.querySelectorAll('#gvTimeTrack tr');
+  const projects: any[] = [];
+  doc.querySelectorAll('#gvTimeTrack tr').forEach((row: any, index: number) => {
+    if (row.cells.length < 8) return;
 
-  rows.forEach((row: any, idx: number) => {
-    if ((row as HTMLTableRowElement).cells.length < 5) return;
+    const category = row.querySelector('span')?.textContent?.trim() || '';
+    const projectName = row.cells[0].textContent?.trim().replace(category, '').trim() || '';
 
-    const category = (row.querySelector('span') as HTMLSpanElement)?.textContent?.trim() ?? '';
-    const fullText = (row.cells[0] as HTMLTableCellElement).textContent ?? '';
-    const projectName = fullText.replace(category, '').trim();
-
-    // Hidden inputs
     let projectId = 0, budgetId = 0, budgetAssignmentId = 0, markAsHiddenId = '';
-    const hiddenInputs = row.querySelectorAll('input[type="hidden"]');
-    hiddenInputs.forEach((inp: HTMLInputElement) => {
-      const name = inp.name ?? '';
-      const val = inp.value ?? '';
+    row.querySelectorAll('input[type="hidden"]').forEach((inp: HTMLInputElement) => {
+      const name = inp.name || '';
+      const val = inp.value || '';
       if (name.includes('ProjectID')) projectId = Number(val);
       if (name.includes('BudgetID')) budgetId = Number(val);
       if (name.includes('TTBudgetAssignmentID')) budgetAssignmentId = Number(val);
       if (name.includes('hdnMarkAsHidden')) markAsHiddenId = val;
     });
 
-    // Used / Assigned
-    const usedAssignedCell = row.cells[row.cells.length - 2] as HTMLTableCellElement;
-    const usedAssignedText = usedAssignedCell?.textContent?.trim() ?? '0 / 0';
+    const usedAssignedText = row.cells[row.cells.length - 2].textContent?.trim() || '0 / 0';
     const [usedStr = '0', assignedStr = '0'] = usedAssignedText.split('/').map((s: string) => s.replace(/[^\d.]/g, '').trim());
     const usedHours = parseFloat(usedStr);
     const assignedHours = parseFloat(assignedStr);
     const availableHours = Math.max(0, assignedHours - usedHours);
 
-    const approver = (row.cells[row.cells.length - 3] as HTMLTableCellElement)?.textContent?.trim() ?? '';
+    const approver = row.cells[row.cells.length - 3].textContent?.trim() || '';
 
-    // Daily hours
-    const dailyHours: DailyHours = {};
-    const textInputs = row.querySelectorAll('input[type="text"]');
-    textInputs.forEach((inp: HTMLInputElement, i: number) => {
-      const dayKey = `D${i + 1}`;
-      const value = inp.value || '0';
-      dailyHours[dayKey] = parseFloat(value) || 0;
+    const dailyInputs = row.querySelectorAll('input[type="text"]');
+    const dailyHours: any = {};
+    dailyInputs.forEach((inp: HTMLInputElement, i: number) => {
+      const day = `D${i + 1}`;
+      const val = inp.value || '0';
+      dailyHours[day] = parseFloat(val) || 0;
       const idMatch = inp.id?.match(/_(\d+)$/);
-      dailyHours[dayKey + 'ID'] = idMatch ? Number(idMatch[1]) : 0;
+      dailyHours[day + 'ID'] = idMatch ? Number(idMatch[1]) : 0;
     });
 
     const rowTotal = Object.keys(dailyHours)
       .filter(k => k.startsWith('D') && !k.endsWith('ID'))
-      .reduce((sum, k) => sum + dailyHours[k], 0);
+      .reduce((sum: number, k: string) => sum + dailyHours[k], 0);
 
     projects.push({
-      index: idx,
+      index,
       category,
       projectName,
       projectId,
@@ -207,7 +127,7 @@ function parseTimesheetHtml(html: string): any {
       isSubmitted: false,
       isApproved: false,
       monthlyUsed: 0,
-      maxHrs: 0,
+      maxHrs: 0.00,
       dailyHours,
       rowTotal: Number(rowTotal.toFixed(2)),
     });
@@ -218,20 +138,30 @@ function parseTimesheetHtml(html: string): any {
   return {
     header: {
       member: memberName,
-      memberId: Number(html.match(/MemberID[^0-9]*(\d+)/)?.[1] ?? '0'),
+      memberId,
       weekEnding,
-      startDate: weekDays[0]?.date ?? '',
-      endDate: weekDays[6]?.date ?? '',
-      ttHeaderId,
-      totalHoursLogged: Number(totalHoursLogged.toFixed(2)),
+      startDate: weekDays[0]?.date || '',
+      endDate: weekDays[6]?.date || '',
       isSubmitted: false,
       isApproved: false,
+      isFirstWeek: false,
+      isLastWeek: false,
+      isPartial: false,
+      isUIAPFullTimeEmployee: true,
       isFullTimeEmployee: true,
       userType: 'FTEMP',
+      ttHeaderId,
+      totalHoursLogged: Number(totalHoursLogged.toFixed(2)),
     },
     weekDays,
     projects,
   };
 }
 
-export const dynamic = 'force-dynamic';
+function normalizeDate(dateStr: string): string | null {
+  const parts = dateStr.replace(/[-.]/g, '/').split('/');
+  if (parts.length !== 3) return null;
+  const [a, b, c] = parts.map(Number);
+  if (a > 31) return `${b}/${a}/${c}`; // dd/mm/yyyy → mm/dd/yyyy
+  return `${b}/${a}/${c}`;
+}
