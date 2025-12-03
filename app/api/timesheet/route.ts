@@ -1,5 +1,6 @@
 // app/api/timesheet/route.ts
 import { NextResponse } from 'next/server';
+import * as cheerio from 'cheerio';
 
 const BASE_URL = 'https://portal.ubtiinc.com/TimetrackForms/TimeTrack/TimeTrackEntry';
 
@@ -13,7 +14,6 @@ export async function GET(request: Request) {
 
 async function handleRequest(request: Request) {
   try {
-    // === Extract auth & date ===
     let trinityAuth = '';
     let weekEndingDay = '';
 
@@ -27,16 +27,21 @@ async function handleRequest(request: Request) {
       weekEndingDay = url.searchParams.get('weekEndingDay') || url.searchParams.get('dt') || '';
     }
 
-    if (!trinityAuth || !weekEndingDay) {
-      return NextResponse.json({ error: 'Missing trinityAuth or weekEndingDay' }, { status: 400 });
+    if (!trinityAuth) {
+      return NextResponse.json({ error: 'Missing trinityAuth cookie value' }, { status: 400 });
+    }
+    if (!weekEndingDay) {
+      return NextResponse.json({ error: 'Missing weekEndingDay (e.g. 12/5/2025)' }, { status: 400 });
     }
 
     const formattedDate = weekEndingDay.includes('-')
-      ? weekEndingDay.split('-').reverse().join('/')  // 5/12/2025 → 2025/12/5
+      ? weekEndingDay.split('-').join('/')
       : weekEndingDay;
 
-    // === Fetch raw HTML from Trinity ===
-    const response = await fetch(`${BASE_URL}?dt=${encodeURIComponent(formattedDate)}`, {
+    const targetUrl = `${BASE_URL}?dt=${encodeURIComponent(formattedDate)}`;
+
+    const response = await fetch(targetUrl, {
+      method: 'GET',
       headers: {
         'Cookie': `.TrinityAuth=${trinityAuth}`,
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -47,150 +52,77 @@ async function handleRequest(request: Request) {
 
     const html = await response.text();
 
-    if (!response.ok || html.includes('Login')) {
-      return NextResponse.json({ error: 'Invalid session or access denied' }, { status: 401 });
+    if (!response.ok) {
+      return NextResponse.json(
+        { error: `Trinity server error ${response.status}`, details: html.substring(0, 500) },
+        { status: response.status }
+      );
     }
 
-    // =================================================================
-    // PURE STRING + REGEX PARSING — NO CHEERIO, NO PARSING ERRORS EVER
-    // =================================================================
+    // ———————— PARSE HTML TO JSON ————————
+    const $ = cheerio.load(html);
 
-    const result: any = {
-      header: {},
-      weekDays: [],
-      projects: [],
-    };
+    const projects: any[] = [];
 
-    // 1. Extract all ProjectTimeSheetList hidden fields
-    const hiddenFields: Record<string, string> = {};
-    const hiddenRegex = /name=["']ProjectTimeSheetList\[(\d+)\]\.([^"']+)["'][^>]*value=["']([^"']*)["']/g;
-    let match;
-    while ((match = hiddenRegex.exec(html)) !== null) {
-      const [ , idx, field, value ] = match;
-      hiddenFields[`${idx}|${field}`] = value || '';
-    }
+    // Find all project rows
+    $('#ttTable tbody tr.timeTrackEntryRow').each((index, row) => {
+      const $row = $(row);
 
-    // 2. Header info
-    result.header = {
-      member: (html.match(/Member\s*:\s*<\/span>\s*<\/td>\s*<td[^>]*>([^<]+)</i) || [])[1]?.trim() || 'Unknown',
-      memberId: parseInt((html.match(/id=["']AppUserID["'][^>]*value=["'](\d+)/i) || [])[1] || '0'),
-      weekEnding: (html.match(/id=["']WeekEndingDay["'][^>]*value=["']([^"']+)/i) || [])[1] || formattedDate,
-      startDate: (html.match(/id=["']WeekStartDay["'][^>]*value=["']([^"']+)/i) || [])[1] || formattedDate,
-      ttHeaderId: parseInt((html.match(/id=["']TTHeaderID["'][^>]*value=["'](\d+)/i) || [])[1] || '0'),
-      isSubmitted: /id=["']IsSubmitted["'][^>]*value=["']True/i.test(html),
-      totalHoursLogged: 0,
-    };
+      // Extract hidden inputs in this row
+      const hiddenInputs: Record<string, any> = {};
+      $row.find('input[type="hidden"]').each((_, el) => {
+        const name = $(el).attr('name') || '';
+        const value = $(el).attr('value') || '';
+        const id = $(el).attr('id') || '';
 
-    // 3. Week days (from table header)
-    const thMatches = [...html.matchAll(/<th[^>]*class=["'][^"']*gridHeader[^"']*["'][^>]*>([^<]*?)<br[^>]*>\s*(\d+)/gi)];
-    const baseDate = new Date(result.header.startDate.split('/').reverse().join('-'));
-    result.weekDays = thMatches.slice(0, 7).map((m, i) => {
-      const dayName = m[1].trim() || ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][i];
-      const dayNum = parseInt(m[2]);
-      const date = new Date(baseDate);
-      date.setDate(date.getDate() + i);
-      return {
-        date: date.toISOString().split('T')[0],
-        day: dayName,
-        dayNum,
-      };
-    });
-
-    // 4. Detect categories (In-Direct, OverHead, etc.)
-    let currentCategory = 'Uncategorized';
-    const categoryRegex = /<tr[^>]*class=["'][^"']*budgHeaders[^"']*["'][^>]*>[\s\S]*?<td[^>]*>([^<]+)</gi;
-    const categoryMatches = [...html.matchAll(categoryRegex)];
-
-    // 5. Extract project rows
-    const rowRegex = /<tr[^>]*class=["'][^"'] alienate timeTrackEntryRow[^"']*["'][^>]*>[\s\S]*?<\/tr>/gi;
-    let rowMatch;
-    let projectIndex = 0;
-    let categoryIndex = 0;
-
-    while ((rowMatch = rowRegex.exec(html)) !== null && projectIndex < 100) {
-      const rowHtml = rowMatch[0];
-
-      // Update current category if needed
-      while (categoryIndex < categoryMatches.length) {
-        const catRowIndex = html.indexOf(categoryMatches[categoryIndex][0]);
-        const thisRowIndex = html.indexOf(rowHtml);
-        if (catRowIndex < thisRowIndex) {
-          currentCategory = categoryMatches[categoryIndex][1].trim();
-          categoryIndex++;
-        } else {
-          break;
+        // Extract index from name like ProjectTimeSheetList[3].BudgetID
+        const match = name.match(/ProjectTimeSheetList\[(\d+)\]\.(.*)/);
+        if (match) {
+          const [, rowIndex, field] = match;
+          if (parseInt(rowIndex) === index) {
+            hiddenInputs[field] = isNaN(parseFloat(value)) ? value : parseFloat(value);
+          }
         }
-      }
+      });
+
+      // Extract day input names (D1 to D7)
+      const inputNames: Record<string, string> = {};
+      const dayIds: Record<string, number> = {};
+      ['D1', 'D2', 'D3', 'D4', 'D5', 'D6', 'D7'].forEach(day => {
+        const input = $row.find(`input[name*=".${day}"]`);
+        if (input.length) {
+          inputNames[day] = input.attr('name') || '';
+          const idInput = $(`input[id*="${day}ID"][value]`).first();
+          dayIds[`${day}ID`] = idInput.length ? parseInt(idInput.val() as string) || 0 : 0;
+        }
+      });
 
       // Extract visible data
-      const nameMatch = rowHtml.match(/<td[^>]*class=["'][^"']*ttProjectName[^"']*["'][^>]*>([\s\S]*?)<\/td>/i);
-      const projectName = nameMatch ? nameMatch[1].replace(/<[^>]+>/g, '').trim() : 'Unknown Project';
+      const projectName = $row.find('td').first().text().trim();
+      const availableHrsText = $row.find('.ttAvailableHrs').text().trim();
+      const usedAssignedText = $row.find('td').eq(11).text().trim(); // Used / Assigned column
+      const [usedHrsStr, assignedHrsStr] = usedAssignedText.split('/').map(s => s.trim());
 
-      const usedAssignedMatch = rowHtml.match(/<td[^>]*>\s*([\d.]+)\s*\/\s*([\d.]+)/);
-      const usedHours = usedAssignedMatch ? parseFloat(usedAssignedMatch[1]) : 0;
-      const assignedHours = usedAssignedMatch ? parseFloat(usedAssignedMatch[2]) : 0;
-
-      const availableMatch = rowHtml.match(/class=["']ttAvailableHrs["'][^>]*>\s*([\d.]+)/i);
-      const availableHours = availableMatch ? parseFloat(availableMatch[1]) : 0;
-
-      const approverMatch = [...rowHtml.matchAll(/<td[^>]*>([^<]+)</g)].slice(-2, -1)[0];
-      const approver = approverMatch ? approverMatch[1].trim() : '';
-
-      // Hidden data for this row
-      const hidden: any = {};
-      Object.keys(hiddenFields).forEach(key => {
-        const [idx, field] = key.split('|');
-        if (parseInt(idx) === projectIndex) {
-          let val: any = hiddenFields[key];
-          if (['ProjectID','BudgetID','TTBudgetAssignmentID','MonthlyUsed','MaxHrs'].includes(field)) {
-            val = parseInt(val) || 0;
-          }
-          if (field.includes('D') && field.includes('ID')) {
-            val = parseInt(val) || 0;
-          }
-          if (field.match(/^D\d+$/)) {
-            val = parseFloat(val) || 0;
-          }
-          hidden[field] = val;
-        }
-      });
-
-      // Daily hours
-      const dailyHours: any = {};
-      let rowTotal = 0;
-      ['D1','D2','D3','D4','D5','D6','D7'].forEach(d => {
-        const val = parseFloat(hidden[d] || '0') || 0;
-        dailyHours[d] = val;
-        dailyHours[`${d}ID`] = parseInt(hidden[`${d}ID`] || '0') || 0;
-        rowTotal += val;
-      });
-
-      result.projects.push({
-        index: projectIndex,
-        category: currentCategory,
+      projects.push({
+        index,
+        budgetId: hiddenInputs.BudgetID || null,
+        budgetAssignmentId: hiddenInputs.TTBudgetAssignmentID || null,
+        projectId: hiddenInputs.ProjectID || null,
         projectName,
-        projectId: hidden.ProjectID || null,
-        budgetId: hidden.BudgetID || null,
-        budgetAssignmentId: hidden.TTBudgetAssignmentID || null,
-        hourlyTypeName: hidden.HourlyTypeName || 'Unknown',
-        availableHours,
-        usedHours,
-        assignedHours,
-        usedAssignedDisplay: `${usedHours} / ${assignedHours}`,
-        approver,
-        markAsHiddenId: `${hidden.ProjectID || ''}-${hidden.BudgetID || ''}`,
-        isSubmitted: !!hidden.IsSubmitted,
-        isApproved: !!hidden.IsApproved,
-        monthlyUsed: hidden.MonthlyUsed || 0,
-        maxHrs: hidden.MaxHrs || 0,
-        dailyHours,
-        rowTotal,
+        hourlyType: hiddenInputs.HourlyTypeName || 'Unknown',
+        availableHours: parseFloat(availableHrsText) || 0,
+        usedHours: parseFloat(usedHrsStr) || 0,
+        maxHours: parseFloat(assignedHrsStr) || 0,
+        inputNames,
+        dayIds,
       });
+    });
 
-      projectIndex++;
-    }
-
-    result.header.totalHoursLogged = result.projects.reduce((sum: number, p: any) => sum + p.rowTotal, 0);
+    const result = {
+      weekEndingDay: $('#WeekEndingDay').val() || formattedDate,
+      projectCount: projects.length,
+      projects,
+    };
 
     return NextResponse.json(result, {
       headers: {
@@ -200,9 +132,9 @@ async function handleRequest(request: Request) {
     });
 
   } catch (error: any) {
-    console.error('Timesheet proxy error:', error);
+    console.error('Timesheet parsing error:', error);
     return NextResponse.json(
-      { error: 'Failed to fetch/parse timesheet', details: error.message },
+      { error: 'Failed to parse timesheet', details: error.message },
       { status: 500 }
     );
   }
