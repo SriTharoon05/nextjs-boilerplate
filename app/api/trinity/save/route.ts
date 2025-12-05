@@ -90,7 +90,7 @@ export async function POST(request: NextRequest) {
 
     // SUCCESS HAS PRIORITY — check this first!
     const hasSuccessMessage = 
-      text.includes('Timesheet saved successfully') ||
+      text.includes('Timesheet Saved.') ||
       text.includes('Timesheet submitted successfully') ||
       text.includes('fa-check-circle') ||
       text.includes('Your timesheet has been saved') ||
