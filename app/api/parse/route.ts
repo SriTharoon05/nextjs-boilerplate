@@ -1,10 +1,9 @@
-// app/api/parse/route.ts → POST /api/parse
+// app/api/parse/route.ts
 import { NextResponse } from 'next/server';
 import { AzureChatOpenAI } from '@langchain/openai';
 
 const BASE_URL = 'https://portal.ubtiinc.com/TimetrackForms/TimeTrack/TimeTrackEntry';
 
-// This works 100% on Vercel + Azure
 const llm = new AzureChatOpenAI({
   azureOpenAIApiKey: process.env.AZURE_OPENAI_API_KEY!,
   azureOpenAIApiInstanceName: process.env.AZURE_OPENAI_INSTANCE_NAME!,
@@ -22,7 +21,6 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Missing trinityAuth or weekEndingDay' }, { status: 400 });
     }
 
-    // Format date: 2025-12-05 → 05/12/2025
     const dateStr = weekEndingDay.includes('-')
       ? weekEndingDay.split('-').reverse().join('/')
       : weekEndingDay;
@@ -35,12 +33,28 @@ export async function POST(request: Request) {
       cache: 'no-store',
     });
 
-    if (!res.ok) {
-      const text = await res.text();
-      return NextResponse.json({ error: 'Invalid TrinityAuth', details: text.substring(0, 300) }, { status: 401 });
+    const html = await res.text();
+
+    // Critical Fix: Detect login page by checking for known elements
+    const isLoginPage = 
+      html.includes('SIGN IN') || 
+      html.includes('id="login-form-container"') ||
+      html.includes('Can\'t access your account?') ||
+      html.includes('UBTI-Logo-300dpi.png') ||
+      html.includes('/TimetrackForms/Login/Username');
+
+    if (isLoginPage) {
+      return NextResponse.json(
+        { 
+          error: 'Invalid or expired TrinityAuth token', 
+          authValid: false 
+        },
+        { status: 401 }
+      );
     }
 
-    const html = await res.text();
+    // Optional: Also check if it's not a timesheet (e.g. no project table, no dates, etc.)
+    // But the above login checks are sufficient and reliable
 
     const prompt = `
 You are an expert at extracting Trinity TimeTrack timesheets.
@@ -106,21 +120,29 @@ ${html.substring(0, 100000)}
     const completion = await llm.invoke(prompt);
     const content = (completion as any).content?.trim() || '';
 
-    // Clean ```json wrappers
     const jsonStr = content.replace(/```json|```/g, '').trim();
 
     let result;
     try {
       result = JSON.parse(jsonStr);
     } catch (e) {
-      return NextResponse.json({ error: 'Failed to parse JSON', raw: jsonStr }, { status: 500 });
+      return NextResponse.json(
+        { 
+          error: 'Failed to parse timesheet data from response',
+          raw: jsonStr.substring(0, 1000)
+        },
+        { status: 500 }
+      );
     }
 
     return NextResponse.json(result);
 
   } catch (error: any) {
     console.error('API Error:', error);
-    return NextResponse.json({ error: 'Server error', message: error.message }, { status: 500 });
+    return NextResponse.json(
+      { error: 'Internal server error', message: error.message },
+      { status: 500 }
+    );
   }
 }
 
