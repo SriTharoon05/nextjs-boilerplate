@@ -35,24 +35,23 @@ export async function POST(request: Request) {
 
     const html = await res.text();
 
-    // Critical Fix: Detect login page by checking for known elements
-    const isLoginPage = 
-      html.includes('SIGN IN') || 
-      html.includes('id="login-form-container"') ||
-      html.includes('Can\'t access your account?') ||
-      html.includes('UBTI-Logo-300dpi.png') ||
-      html.includes('/TimetrackForms/Login/Username');
+// Reliable indicators of a VALID timesheet
+const isValidTimesheet = 
+  html.includes('id="ttTable"') || 
+  html.includes('ProjectTimeSheetList[') ||
+  html.includes('timeTrackEntryRow') ||
+  html.includes('ttTotalHrs') ||
+  html.includes('WeekEndingDay');
 
-    if (isLoginPage) {
-      return NextResponse.json(
-        { 
-          error: 'Invalid or expired TrinityAuth token', 
-          authValid: false 
-        },
-        { status: 401 }
-      );
-    }
-
+if (!isValidTimesheet) {
+  return NextResponse.json(
+    { 
+      error: 'Invalid or expired TrinityAuth token', 
+      authValid: false 
+    },
+    { status: 401 }
+  );
+}
     // Optional: Also check if it's not a timesheet (e.g. no project table, no dates, etc.)
     // But the above login checks are sufficient and reliable
 
