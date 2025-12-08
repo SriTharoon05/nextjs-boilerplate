@@ -17,6 +17,8 @@ export async function POST(request: Request) {
   const cookies = response.headers.get('set-cookie') || '';
   const text = await response.text();
 
+
+
   let json: any = null;
   try {
     json = JSON.parse(text);
@@ -42,10 +44,14 @@ export async function POST(request: Request) {
   const isSuccess = typeof json.RedirectUrl === 'string' &&
                     json.RedirectUrl.includes('/TimetrackForms/Dashboard/Index');
 
+  // Extract only the .TrinityAuth value
+  const authMatch = cookies.match(/\.TrinityAuth=([A-F0-9]+);/i);
+  const authToken = authMatch ? authMatch[1] : null;
+
   return new Response(
     JSON.stringify({
       success: isSuccess,
-      cookies: isSuccess ? cookies : null,
+      authToken: isSuccess ? authToken : null,  // ← This is the only value you want
     }),
     {
       status: 200,
@@ -55,7 +61,7 @@ export async function POST(request: Request) {
         'Access-Control-Allow-Credentials': 'true',
       },
     }
-  );
+  );  
 }
 
 export async function OPTIONS() {
