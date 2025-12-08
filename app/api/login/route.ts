@@ -51,7 +51,7 @@ export async function POST(request: Request) {
   return new Response(
     JSON.stringify({
       success: isSuccess,
-      authToken: isSuccess ? authToken : null,  // ← This is the only value you want
+      trinityAuth: isSuccess ? authToken : null,  // ← This is the only value you want
     }),
     {
       status: 200,
