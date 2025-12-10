@@ -1,6 +1,14 @@
 // app/api/login/route.ts ← FINAL, PERFECT, TESTED, DONE.
 
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://sigmaunlimited.netlify.app",
+];
+
 export async function POST(request: Request) {
+  const origin = request.headers.get("origin") || "";
+  const isAllowed = allowedOrigins.includes(origin);
+
   const body = await request.text();
 
   const response = await fetch('https://portal.ubtiinc.com/TimetrackForms/Login/UsernamePassword', {
@@ -33,7 +41,7 @@ export async function POST(request: Request) {
         status: 200,
         headers: {
           'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': 'http://localhost:5173, https://sigmaunlimited.netlify.app/admin',
+          'Access-Control-Allow-Origin': isAllowed ? origin : '',
           'Access-Control-Allow-Credentials': 'true',
         },
       }
@@ -57,18 +65,21 @@ export async function POST(request: Request) {
       status: 200,
       headers: {
         'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': 'http://localhost:5173',
+        'Access-Control-Allow-Origin': isAllowed ? origin : '',
         'Access-Control-Allow-Credentials': 'true',
       },
     }
   );  
 }
 
-export async function OPTIONS() {
+export async function OPTIONS(request: Request) {
+  const origin = request.headers.get("origin") || "";
+  const isAllowed = allowedOrigins.includes(origin);
+
   return new Response(null, {
     status: 204,
     headers: {
-      'Access-Control-Allow-Origin': 'http://localhost:5173',
+      'Access-Control-Allow-Origin': isAllowed ? origin : '',
       'Access-Control-Allow-Credentials': 'true',
       'Access-Control-Allow-Methods': 'POST, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type,X-Requested-With,Accept',
