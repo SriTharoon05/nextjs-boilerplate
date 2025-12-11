@@ -52,38 +52,59 @@ export async function POST(request: Request) {
   }
 
   // === Step 2: LMS Authentication ===
-  let lmsSuccess = false;
-  let LMStoken: string | null = null;
-  let LMSdata: any = null;
+// === Step 2: LMS Authentication ===
+let lmsSuccess = false;
+let LMStoken: string | null = null;
+let LMSdata: any = null;
 
-  if (username && password) {
-    console.log('Attempting LMS authentication for user:', username);
-    console.log('LMS Password:', password);
-    console.log('LMS URL:', `https://uiaplmsapi.azurewebsites.net/api/employee/getAuthenticate/${username},${password}`);
-    try {
-      const lmsUrl = `https://uiaplmsapi.azurewebsites.net/api/employee/getAuthenticate/${username},${password}`;
+if (username && password) {
+  const lmsUrl = `https://uiaplmsapi.azurewebsites.net/api/employee/getAuthenticate/${username},${password}`;
 
-      const lmsResponse = await fetch(lmsUrl, {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json',
-        },
-      });
+  console.log('[LMS DEBUG] Starting authentication attempt');
+  console.log('[LMS DEBUG] Username:', username);
+  console.log('[LMS DEBUG] Full URL:', lmsUrl);
 
-      if (lmsResponse.ok) {
-        const lmsJson = await lmsResponse.json();
-        if (lmsJson.Token) {
-          lmsSuccess = true;
-          LMStoken = lmsJson.Token;
-          LMSdata = lmsJson.Data || null;
-        }
+  try {
+    const lmsResponse = await fetch(lmsUrl, {
+      method: 'GET',
+      headers: {
+        'Accept': 'application/json',
+      },
+    });
+
+    console.log('[LMS DEBUG] Response Status:', lmsResponse.status, lmsResponse.statusText);
+    console.log('[LMS DEBUG] Response OK:', lmsResponse.ok);
+
+    if (!lmsResponse.ok) {
+      const errorText = await lmsResponse.text();
+      console.log('[LMS DEBUG] Failed Response Body:', errorText.substring(0, 500)); // First 500 chars
+      console.log('[LMS DEBUG] LMS login failed - HTTP', lmsResponse.status);
+    } else {
+      const lmsJson = await lmsResponse.json();
+      console.log('[LMS DEBUG] Full Response JSON:', JSON.stringify(lmsJson));
+
+      if (lmsJson.Token) {
+        console.log('[LMS DEBUG] SUCCESS! Token received (length):', lmsJson.Token.length);
+        lmsSuccess = true;
+        LMStoken = lmsJson.Token;
+        LMSdata = lmsJson.Data || null;
+      } else {
+        console.log('[LMS DEBUG] FAILED - No Token in response');
+        console.log('[LMS DEBUG] Available keys:', Object.keys(lmsJson));
       }
-    } catch (err) {
-      console.error('LMS authentication failed:', err);
-      // lmsSuccess remains false
-    }
-  }
 
+      // Extra check for status message
+      const statusResult = lmsJson?.Data?.status?.[0]?.result;
+      const statusMessage = lmsJson?.Data?.status?.[0]?.message;
+      console.log('[LMS DEBUG] Status result:', statusResult);
+      console.log('[LMS DEBUG] Status message:', statusMessage);
+    }
+  } catch (err: any) {
+    console.error('[LMS DEBUG] EXCEPTION THROWN:');
+    console.error('   Message:', err.message);
+    console.error('   Stack:', err.stack);
+  }
+}
   // === Final combined success ===
   const success = trinitySuccess || lmsSuccess;
 
