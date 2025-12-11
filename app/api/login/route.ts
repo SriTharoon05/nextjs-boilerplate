@@ -11,8 +11,8 @@ export async function POST(request: Request) {
 
   const bodyText = await request.text();
   const params = new URLSearchParams(bodyText);
-  const username = params.get("username") || "";
-  const password = params.get("password") || "";
+  const username = params.get("UserIdentification.Username") || "";
+  const password = params.get("Password") || "";
 
   if (!username || !password) {
     return new Response(JSON.stringify({ success: false, error: "Missing credentials" }), {
