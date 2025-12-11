@@ -81,31 +81,35 @@ if (username && password) {
     }
 
     // CRITICAL: Properly parse JSON with error handling
-    let lmsJson: any;
-    try {
-      lmsJson = await lmsResponse.json();
-      console.log('[LMS DEBUG] SUCCESS: JSON parsed correctly');
-      console.log('[LMS DEBUG] Full Parsed JSON:', JSON.stringify(lmsJson));
-    } catch (parseErr: any) {
-      console.error('[LMS DEBUG] JSON PARSE FAILED!');
-      const rawText = await lmsResponse.text();
-      console.error('[LMS DEBUG] Raw response body:', rawText.substring(0, 1000));
-      console.error('[LMS DEBUG] Parse error:', parseErr.message);
-      throw parseErr; // or continue
-    }
+// CRITICAL: Properly parse JSON with error handling
+let lmsJson: any;
+try {
+  lmsJson = await lmsResponse.json();
+  console.log('[LMS DEBUG] SUCCESS: JSON parsed correctly');
+  console.log('[LMS DEBUG] Full Parsed JSON:', lmsJson);  // ← FIXED: no JSON.stringify here
+  // Or for pretty print:
+  // console.log('[LMS DEBUG] Full Parsed JSON:', JSON.stringify(lmsJson, null, 2));
+} catch (parseErr: any) {
+  console.error('[LMS DEBUG] JSON PARSE FAILED!');
+  const rawText = await lmsResponse.text();
+  console.error('[LMS DEBUG] Raw response body:', rawText.substring(0, 1000));
+  console.error('[LMS DEBUG] Parse error:', parseErr.message);
+  lmsJson = null;
+}
 
-    if (lmsJson && lmsJson.Token) {
-      console.log('[LMS DEBUG] SUCCESS! Token found');
-      lmsSuccess = true;
-      LMStoken = lmsJson.Token;
-      LMSdata = lmsJson.Data || null;
+if (lmsJson && typeof lmsJson === 'object' && lmsJson.Token) {
+  console.log('[LMS DEBUG] SUCCESS! Token found');
+  lmsSuccess = true;
+  LMStoken = lmsJson.Token;
+  LMSdata = lmsJson.Data || null;
 
-      const statusResult = lmsJson?.Data?.status?.[0]?.result;
-      console.log('[LMS DEBUG] LMS Status:', statusResult);
-    } else {
-      console.log('[LMS DEBUG] FAILED - No Token in parsed JSON');
-      console.log('[LMS DEBUG] Available top-level keys:', Object.keys(lmsJson || {}));
-    }
+  const statusResult = lmsJson?.Data?.status?.[0]?.result;
+  console.log('[LMS DEBUG] LMS Status:', statusResult);
+} else {
+  console.log('[LMS DEBUG] FAILED - No Token in parsed JSON');
+  console.log('[LMS DEBUG] lmsJson type:', typeof lmsJson);
+  console.log('[LMS DEBUG] Available top-level keys:', Object.keys(lmsJson || {}));
+}
   } catch (err: any) {
     console.error('[LMS DEBUG] Fetch or processing error:', err.message || err);
   }
