@@ -58,7 +58,7 @@ export async function POST(request: Request) {
 
   if (username && password) {
     try {
-      const lmsUrl = `https://uiaplmsapi.azurewebsites.net/api/employee/getAuthenticate/${encodeURIComponent(username)},${encodeURIComponent(password)}`;
+      const lmsUrl = `https://uiaplmsapi.azurewebsites.net/api/employee/getAuthenticate/${username},${password}`;
 
       const lmsResponse = await fetch(lmsUrl, {
         method: 'GET',
