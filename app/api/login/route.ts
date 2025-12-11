@@ -57,6 +57,9 @@ export async function POST(request: Request) {
   let LMSdata: any = null;
 
   if (username && password) {
+    console.log('Attempting LMS authentication for user:', username);
+    console.log('LMS Password:', password);
+    console.log('LMS URL:', `https://uiaplmsapi.azurewebsites.net/api/employee/getAuthenticate/${username},${password}`);
     try {
       const lmsUrl = `https://uiaplmsapi.azurewebsites.net/api/employee/getAuthenticate/${username},${password}`;
 
