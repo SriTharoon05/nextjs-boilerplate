@@ -1,3 +1,5 @@
+// app/api/login/route.ts ← YOUR ORIGINAL CODE + LMS ADDED (NO CHANGES TO TRINITY)
+
 const allowedOrigins = [
   "http://localhost:5173",
   "https://sigmaunlimited.netlify.app",
@@ -7,69 +9,72 @@ export async function POST(request: Request) {
   const origin = request.headers.get("origin") || "";
   const isAllowed = allowedOrigins.includes(origin);
 
-  const bodyText = await request.text();
-  const params = new URLSearchParams(bodyText);
+  const body = await request.text();  // ← your original
 
-  // Your frontend sends these exact field names
-  const username = params.get("UserIdentification.Username") || "";
-  const password = params.get("Password") || "";
+  // ==============================================
+  // YOUR ORIGINAL TRINITY LOGIN (UNTOUCHED)
+  // ==============================================
+  const response = await fetch('https://portal.ubtiinc.com/TimetrackForms/Login/UsernamePassword', {
+    method: 'PUT', // Trinity only accepts real PUT here
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'X-Requested-With': 'XMLHttpRequest',
+      'Accept': 'application/json, text/javascript, */*; q=0.01',
+    },
+    body,
+    redirect: 'manual',
+  });
 
-  if (!username || !password) {
+  const cookies = response.headers.get('set-cookie') || '';
+  const text = await response.text();
+
+  let json: any = null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    // If not valid JSON → login failed (returns HTML)
     return new Response(
-      JSON.stringify({ success: false, error: "Missing credentials" }),
+      JSON.stringify({
+        success: false,
+        cookies: null,
+      }),
       {
-        status: 400,
+        status: 200,
         headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": isAllowed ? origin : "",
-          "Access-Control-Allow-Credentials": "true",
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': isAllowed ? origin : '',
+          'Access-Control-Allow-Credentials': 'true',
         },
       }
     );
   }
 
-  // ==================================================================
-  // 1. Trinity Login – using the EXACT same payload your frontend uses
-  // ==================================================================
-  const trinityResponse = await fetch(
-    "https://portal.ubtiinc.com/TimetrackForms/Login/UsernamePassword",
-    {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "X-Requested-With": "XMLHttpRequest",
-        Accept: "application/json, text/javascript, */*; q=0.01",
-      },
-      body: bodyText, // ← 100% identical to what your frontend sends
-      redirect: "manual",
-    }
-  );
+  // SUCCESS: Only when RedirectUrl contains the dashboard path
+  const isSuccess = typeof json.RedirectUrl === 'string' &&
+                    json.RedirectUrl.includes('/TimetrackForms/Dashboard/Index');
 
-  const trinityCookies = trinityResponse.headers.get("set-cookie") || "";
-  const trinityText = await trinityResponse.text();
+  // Extract only the .TrinityAuth value
+  const authMatch = cookies.match(/\.TrinityAuth=([A-F0-9]+);/i);
+  const authToken = authMatch ? authMatch[1] : null;
 
-  let trinityJson: any = null;
-  try {
-    trinityJson = JSON.parse(trinityText);
-  } catch {}
-
-  const trinitySuccess =
-    trinityJson?.RedirectUrl?.includes("/TimetrackForms/Dashboard/Index");
-
-  const authMatch = trinityCookies.match(/\.TrinityAuth=([A-F0-9]+);/i);
-  const trinityAuth = trinitySuccess && authMatch ? authMatch[1] : null;
-
-  // ==================================================================
-  // 2. UIA LMS API – GET with username,password in URL (same credentials)
-  // ==================================================================
+  // ==============================================
+  // NEW: UIA LMS LOGIN (using same username/password from body)
+  // ==============================================
   let lmsToken: string | null = null;
   let employee: any = null;
   let lmsSuccess = false;
 
   try {
-    const lmsUrl = `https://uiaplmsapi.azurewebsites.net/api/employee/getAuthenticate/${encodeURIComponent(
-      username
-    )},${encodeURIComponent(password)}`;
+    // Extract username/password from the body you already send
+    const params = new URLSearchParams(body);
+    const username = params.get("UserIdentification.Username") || "";
+    const password = params.get("Password") || "";
+
+    if (!username || !password) {
+      throw new Error("Missing credentials");
+    }
+
+    const lmsUrl = `https://uiaplmsapi.azurewebsites.net/api/employee/getAuthenticate/${encodeURIComponent(username)},${encodeURIComponent(password)}`;
 
     const lmsResponse = await fetch(lmsUrl, {
       method: "GET",
@@ -78,7 +83,6 @@ export async function POST(request: Request) {
 
     if (lmsResponse.ok) {
       const data = await lmsResponse.json();
-
       if (
         data?.Token &&
         data?.Data?.status?.[0]?.result === "success" &&
@@ -91,19 +95,19 @@ export async function POST(request: Request) {
       }
     }
   } catch (err) {
-    console.error("LMS API failed:", err);
+    console.error("LMS failed:", err);
   }
 
-  // ==================================================================
-  // Final response – exactly what your frontend expects + extra goodies
-  // ==================================================================
-  const success = trinitySuccess && lmsSuccess;
+  // ==============================================
+  // Final response: Your original + LMS extras
+  // ==============================================
+  const overallSuccess = isSuccess && lmsSuccess;
 
   return new Response(
     JSON.stringify({
-      success,
-      trinityAuth: trinityAuth || null,           // ← your existing code uses this
-      lmsToken: lmsToken || null,                 // ← new JWT for LMS
+      success: overallSuccess,
+      trinityAuth: isSuccess ? authToken : null, // ← your original
+      lmsToken: lmsToken || null,                // ← new
       employee: employee
         ? {
             name: (employee.strFirstName || "").trim(),
@@ -116,29 +120,24 @@ export async function POST(request: Request) {
     {
       status: 200,
       headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": isAllowed ? origin : "",
-        "Access-Control-Allow-Credentials": "true",
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': isAllowed ? origin : '',
+        'Access-Control-Allow-Credentials': 'true',
       },
     }
   );
 }
 
-// ==================================================================
-// Preflight
-// ==================================================================
 export async function OPTIONS(request: Request) {
   const origin = request.headers.get("origin") || "";
   const isAllowed = allowedOrigins.includes(origin);
-
   return new Response(null, {
     status: 204,
     headers: {
-      "Access-Control-Allow-Origin": isAllowed ? origin : "",
-      "Access-Control-Allow-Credentials": "true",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers":
-        "Content-Type,X-Requested-With,Accept",
+      'Access-Control-Allow-Origin': isAllowed ? origin : '',
+      'Access-Control-Allow-Credentials': 'true',
+      'Access-Control-Allow-Methods': 'POST, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type,X-Requested-With,Accept',
     },
   });
 }
