@@ -6,7 +6,8 @@ export async function POST(request: Request) {
 
     const empId = body.empId;
     const token = body.token;
-
+    console.log("[LMS DASHBOARD] empId:", empId);
+    console.log("[LMS DASHBOARD] token:", token);
     if (!empId || !token) {
       return new Response(
         JSON.stringify({ error: "empId and token required" }),
@@ -26,13 +27,14 @@ export async function POST(request: Request) {
         Accept: "application/json",
       },
     });
-
+    console.log("[LMS DASHBOARD] Response Status:", response.status, response.statusText);
     const raw = await response.text();
     console.log("[LMS DASHBOARD] RAW:", raw.substring(0, 300));
 
     // Fix double-encoded JSON issue
     let json;
     try {
+      console.log(raw);
       const first = JSON.parse(raw);
       json = typeof first === "string" ? JSON.parse(first) : first;
     } catch (err) {
