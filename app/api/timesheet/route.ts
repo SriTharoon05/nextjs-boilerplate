@@ -65,7 +65,7 @@ async function handleRequest(request: Request) {
     const $ = cheerio.load(html);
 
     const result = {
-      ttTable: $('#ttTable').html() || '',
+      ttTable: $.html($('#ttTable')) || '',
       Filter: $.html($('#filter')) || '',
       IsSubmitted: $('#IsSubmitted').val() || $('#IsSubmitted').text() || '',
       IsApproved: $('#IsApproved').val() || $('#IsApproved').text() || '',
