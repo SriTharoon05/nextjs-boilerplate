@@ -214,87 +214,118 @@ async function handleRequest(request: Request) {
       });
     });
 
-    // ────────────────────────────────────────────────
-    // 3. Projects
-    // ────────────────────────────────────────────────
-    const projects: any[] = [];
+// ────────────────────────────────────────────────
+// 3. Projects
+// ────────────────────────────────────────────────
+const projects: any[] = [];
 
-    let currentCategory = '';
+let currentCategory = '';
 
-    $('tbody > tr').each((i, row) => {
-      const $row = $(row);
+$('tbody tr').each((_, row) => {
+  const $row = $(row);
 
-      // Category header row
-      if ($row.hasClass('Direct') || $row.hasClass('In-Direct') || $row.hasClass('OverHead') || $row.attr('id')?.startsWith('billingType-')) {
-        currentCategory = $row.find('td').first().text().trim();
-        return;
-      }
+  // Category header rows
+  if ($row.attr('id')?.startsWith('billingType-') || $row.hasClass('Direct') || $row.hasClass('In-Direct') || $row.hasClass('OverHead')) {
+    currentCategory = $row.find('td').first().text().trim();
+    return;
+  }
 
-      // Data row
-      if ($row.hasClass('timeTrackEntryRow')) {
-        const index = parseInt($row.attr('id') || '0');
+  // Skip if not a data row
+  if (!$row.hasClass('timeTrackEntryRow')) return;
 
-        const projectName = $row.find('td').first().text().trim();
+  const rowId = $row.attr('id') || '0';
+  const index = parseInt(rowId);
 
-        // Hidden inputs (first set belongs to this row)
-        const getVal = (name: string) =>
-          $row.prevAll(`input[name$="${name}"]`).first().val() as string;
+  const projectName = $row.find('td').first().text().trim();
 
-        const projectId = parseInt(getVal('ProjectID')) || 0;
-        const budgetId = parseInt(getVal('BudgetID')) || 0;
-        const budgetAssignmentId = parseInt(getVal('TTBudgetAssignmentID')) || 0;
-        const hourlyTypeName = getVal('HourlyTypeName') || '';
+  // Helper to get hidden input value just before this row
+  const getHiddenVal = (field: string) => {
+    return $row.prevAll(`input[name$="${field}"]`).first().val() as string ?? '0';
+  };
 
-        // Daily hours & IDs
-        const dailyHours: Record<string, number> = {};
-        const dailyIds: Record<string, number> = {};
+  const projectId          = parseInt(getHiddenVal('ProjectID')) || 0;
+  const budgetId           = parseInt(getHiddenVal('BudgetID')) || 0;
+  const budgetAssignmentId = parseInt(getHiddenVal('TTBudgetAssignmentID')) || 0;
+  const hourlyTypeName     = getHiddenVal('HourlyTypeName') || '';
+  const isApprovedStr      = getHiddenVal('IsApproved') || 'False';
+  const isSubmittedStr     = getHiddenVal('IsSubmitted') || 'False';
+  const monthlyUsed        = parseFloat(getHiddenVal('MonthlyUsed')) || 0;
+  const maxHrs             = parseFloat(getHiddenVal('MaxHrs')) || 0;
 
-        for (let d = 1; d <= 7; d++) {
-          const input = $row.find(`input[id$="__D${d}"]`);
-          dailyHours[`D${d}`] = parseFloat(input.val() as string) || 0;
-          dailyIds[`D${d}ID`] = parseInt(getVal(`D${d}ID`)) || 0;
-        }
+  // Daily hours from visible inputs in this row
+  const dailyHours: Record<string, any> = {};
+  for (let d = 1; d <= 7; d++) {
+    const input = $row.find(`input[name$=".D${d}"]`);
+    const idInput = $row.prevAll(`input[name$=".D${d}ID"]`).first();
+    dailyHours[`D${d}`]   = parseFloat(input.val() as string) || 0;
+    dailyHours[`D${d}ID`] = parseInt(idInput.val() as string) || 0;
+  }
 
-        const rowTotal = parseFloat($row.find('td.ttTotalHrs').text().trim()) || 0;
+  const rowTotalText = $row.find('td.ttTotalHrs').text().trim();
+  const rowTotal = parseFloat(rowTotalText) || 0;
 
-        const usedAssignedText = $row.find('td:contains("/")').text().trim();
-        const [usedStr, assignedStr] = usedAssignedText.split('/').map(s => s.trim());
-        const usedHours = parseFloat(usedStr.replace(/[^0-9.]/g, '')) || 0;
-        const assignedHours = parseFloat(assignedStr.replace(/[^0-9.]/g, '')) || 0;
+  // Used / Assigned column (usually 2nd last or 3rd last td)
+  const usedAssignedTd = $row.find('td.right').filter((_, el) => $(el).text().includes('/')).first();
+  let usedAssignedDisplay = usedAssignedTd.text()
+    .replace(/\n\s+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 
-        const availableHours = parseFloat($row.find('td.ttAvailableHrs').text().trim()) || 0;
+  // Parse used & assigned numbers
+  let usedHours = 0;
+  let assignedHours = 0;
 
-        const approver = $row.find('td').eq(-3).text().trim();
+  if (usedAssignedDisplay.includes('/')) {
+    const [usedPart, assignedPart] = usedAssignedDisplay.split('/').map(s => s.trim());
+    usedHours     = parseFloat(usedPart.replace(/[^0-9.]/g, '')) || 0;
+    assignedHours = parseFloat(assignedPart.replace(/[^0-9.]/g, '')) || 0;
+  }
 
-        const statusCell = $row.find('td').eq(-4).text().trim();
-        const projectIsApproved = statusCell.includes('Approved') || getVal('IsApproved') === 'True';
-        const projectIsSubmitted = getVal('IsSubmitted') === 'True';
+  // For Weekly billing → this week's used hours usually = row total (not cumulative used)
+  const isWeekly = hourlyTypeName.toLowerCase() === 'weekly';
+  const thisWeekUsed = isWeekly ? rowTotal : usedHours;
 
-        projects.push({
-          index,
-          category: currentCategory,
-          projectName,
-          projectId,
-          budgetId,
-          budgetAssignmentId,
-          billingType: hourlyTypeName, // or from another column if different
-          hourlyTypeName,
-          availableHours,
-          usedHours,
-          assignedHours,
-          usedAssignedDisplay: usedAssignedText,
-          approver,
-          markAsHiddenId: $row.find('input.ttMarkAsHiddenCheckbox').attr('id') || '',
-          isSubmitted: projectIsSubmitted,
-          isApproved: projectIsApproved,
-          monthlyUsed: parseFloat(getVal('MonthlyUsed')) || 0,
-          maxHrs: parseFloat(getVal('MaxHrs')) || 0,
-          dailyHours: { ...dailyHours, ...dailyIds },
-          rowTotal,
-        });
-      }
-    });
+  // Available hours
+  const availableTd = $row.find('td.ttAvailableHrs');
+  const availableHours = parseFloat(availableTd.text().trim()) || 0;
 
+  // Approver (usually the column before Mark as Hidden)
+  const approverTd = $row.find('td').slice(-3, -2); // adjust if structure changes
+  let approver = approverTd.text().trim();
+
+  // Status column (contains "Approved" label or empty)
+  const statusTd = $row.find('td').slice(-4, -3);
+  const statusText = statusTd.text().trim();
+  const projectIsApproved = statusText.includes('Approved') || isApprovedStr === 'True';
+
+  // If approver is empty or looks wrong → fallback
+  if (!approver || approver === 'Approved') {
+    approver = statusTd.prev().text().trim(); // try one column earlier
+  }
+
+  projects.push({
+    index,
+    category: currentCategory,
+    projectName,
+    projectId,
+    budgetId,
+    budgetAssignmentId,
+    billingType: hourlyTypeName, // or parse from Billing Type column if needed
+    hourlyTypeName,
+    availableHours,
+    usedHours: thisWeekUsed,       // most important fix for Weekly entries
+    assignedHours,
+    usedAssignedDisplay: usedAssignedDisplay.replace(/\s+/g, ' ').trim(),
+    approver,
+    markAsHiddenId: $row.find('input.ttMarkAsHiddenCheckbox').attr('id') || '',
+    isSubmitted: isSubmittedStr === 'True',
+    isApproved: projectIsApproved,
+    monthlyUsed,
+    maxHrs,
+    dailyHours,
+    rowTotal,
+  });
+});
     const result = {
       header,
       weekDays,
