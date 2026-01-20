@@ -66,7 +66,7 @@ async function handleRequest(request: Request) {
 
     const result = {
       ttTable: $('#ttTable').html() || '',
-      Filter: $('#Filter').html() || '',
+      Filter: $.html($('#Filter')) || '',
       IsSubmitted: $('#IsSubmitted').val() || $('#IsSubmitted').text() || '',
       IsApproved: $('#IsApproved').val() || $('#IsApproved').text() || '',
     };
