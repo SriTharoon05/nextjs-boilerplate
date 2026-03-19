@@ -62,18 +62,25 @@ export async function POST(request: Request) {
   let LMSdata: any = null;
 
   if (username && password) {
-    const lmsUrl = `https://uiaplmsapi.azurewebsites.net/api/employee/getAuthenticate/${username},${password}`;
+    // 1. Updated URL to remove parameters from the path
+    const lmsUrl = `https://uiaplmsapi.azurewebsites.net/api/employee/getAuthenticate`;
 
     console.log("[LMS DEBUG] Starting authentication attempt");
     console.log("[LMS DEBUG] Username:", username);
     console.log("[LMS DEBUG] Full URL:", lmsUrl);
 
     try {
+      // 2. Switched to POST and added the raw JSON body
       const lmsResponse = await fetch(lmsUrl, {
-        method: "GET",
+        method: "POST", 
         headers: {
-          Accept: "application/json",
+          "Accept": "application/json",
+          "Content-Type": "application/json", // Required to tell the server it's receiving JSON
         },
+        body: JSON.stringify({
+          userId: username,
+          pwd: password,
+        }),
       });
 
       console.log(
