@@ -2,6 +2,7 @@
 
 const allowedOrigins = [
   "http://localhost:5173",
+  "http://localhost",
   "https://sigmaunlimited.netlify.app",
 ];
 
@@ -151,7 +152,7 @@ export async function POST(request: Request) {
       status: 200,
       headers: {
         "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": isAllowed ? origin : "",
+        "Access-Control-Allow-Origin": isAllowed ? origin : "*",
         "Access-Control-Allow-Credentials": "true",
       },
     }
@@ -165,7 +166,7 @@ export async function OPTIONS(request: Request) {
   return new Response(null, {
     status: 204,
     headers: {
-      "Access-Control-Allow-Origin": isAllowed ? origin : "",
+      "Access-Control-Allow-Origin": isAllowed ? origin : "*",
       "Access-Control-Allow-Credentials": "true",
       "Access-Control-Allow-Methods": "POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type,X-Requested-With,Accept",
